@@ -14,7 +14,7 @@ PIC_TimerEvent timerEvents[PIC_MAX_TIMERS];
 alarm_pool_t* alarm_pool;
 
 int64_t clear_irq(alarm_id_t id, void *user_data) {
-    gpio_put(IRQ_PIN, 0); 
+    PIC_DeActivateIRQ();
     return 0;
 }
 

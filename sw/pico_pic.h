@@ -49,6 +49,13 @@ static __force_inline void PIC_DeActivateIRQ(void) {
     gpio_put(IRQ_PIN, 0); 
 }
 
+__force_inline void PIC_init()
+{
+    gpio_init(IRQ_PIN);
+    gpio_set_dir(IRQ_PIN, GPIO_OUT);
+    gpio_set_drive_strength(IRQ_PIN, GPIO_DRIVE_STRENGTH_12MA);
+}
+
 // void PIC_AddEvent(PIC_EventHandler handler, uint32_t delay, Bitu val=0);
 
 static __force_inline void PIC_AddEvent(PIC_EventHandler handler, uint32_t delay, Bitu val) {

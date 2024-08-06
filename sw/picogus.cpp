@@ -835,9 +835,7 @@ int main()
 #endif // M62429_PIO
     }
 
-    gpio_init(IRQ_PIN);
-    gpio_set_dir(IRQ_PIN, GPIO_OUT);
-    gpio_set_drive_strength(IRQ_PIN, GPIO_DRIVE_STRENGTH_12MA);
+    PIC_init();
 
 #ifdef SOUND_MPU
     puts("Initing MIDI UART...");
