@@ -437,10 +437,7 @@ static constexpr uint32_t IO_END = 0x0u;
 // OR with 0x0000ff00 is required to set pindirs in the PIO
 static constexpr uint32_t IOR_SET_VALUE = 0x0000ff00u;
 
-__force_inline void handle_iow(void) {
-    uint32_t iow_read = pio_sm_get(pio0, IOW_PIO_SM); //>> 16;
-    // printf("%x", iow_read);
-    uint16_t port = (iow_read >> 8) & 0x3FF;
+__force_inline void handle_iow(uint16_t port,uint8_t iow_read) {
     // printf("IOW: %x %x\n", port, iow_read & 0xFF);
 #ifdef SOUND_GUS
     if ((port >> 4 | 0x10) == gus_port_test) {
@@ -632,9 +629,8 @@ __force_inline void handle_iow(void) {
     }
 }
 
-__force_inline void handle_ior(void) {
+__force_inline void handle_ior(uint16_t port) {
     uint8_t x;
-    uint16_t port = pio_sm_get(pio0, IOR_PIO_SM) & 0x3FF;
 #if defined(SOUND_GUS)
     if ((port >> 4 | 0x10) == gus_port_test) {
         // Tell PIO to wait for data

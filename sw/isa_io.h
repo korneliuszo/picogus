@@ -19,8 +19,8 @@ __force_inline bool ior_has_data() {
 
 constexpr float iow_clkdiv = (float)rp2_clock / 183000.0;
 
-__force_inline void handle_iow(void);
-__force_inline void handle_ior(void);
+__force_inline void handle_iow(uint16_t port,uint8_t iow_read);
+__force_inline void handle_ior(uint16_t port);
 
 __force_inline void isa_prepare()
 {
@@ -61,12 +61,16 @@ __force_inline void isa_prepare()
 
 void iow_isr(void) {
     /* //printf("ints %x\n", pio0->ints0); */
-    handle_iow();
+    uint32_t iow_read = pio_sm_get(pio0, IOW_PIO_SM); //>> 16;
+    // printf("%x", iow_read);
+    uint16_t port = (iow_read >> 8) & 0x3FF;
+    handle_iow(port,iow_read);
     // pio_interrupt_clear(pio0, pio_intr_sm0_rxnempty_lsb);
     irq_clear(PIO0_IRQ_0);
 }
 void ior_isr(void) {
-    handle_ior();
+    uint16_t port = pio_sm_get(pio0, IOR_PIO_SM) & 0x3FF;
+    handle_ior(port);
     // pio_interrupt_clear(pio0, PIO_INTR_SM0_RXNEMPTY_LSB);
     irq_clear(PIO0_IRQ_1);
 }
@@ -92,11 +96,15 @@ __force_inline void isa_irq_prepare()
 __force_inline void isa_poll()
 {
     if (iow_has_data()) {
-        handle_iow();
+        uint32_t iow_read = pio_sm_get(pio0, IOW_PIO_SM); //>> 16;
+        // printf("%x", iow_read);
+        uint16_t port = (iow_read >> 8) & 0x3FF;
+        handle_iow(port,iow_read);
     }
 
     if (ior_has_data()) {
-        handle_ior();
+        uint16_t port = pio_sm_get(pio0, IOR_PIO_SM) & 0x3FF;
+        handle_ior(port);
     }
 }
 
