@@ -49,7 +49,7 @@ static __force_inline void PIC_DeActivateIRQ(void) {
     gpio_put(IRQ_PIN, 0); 
 }
 
-__force_inline void PIC_init()
+static __force_inline void PIC_IO_Init()
 {
     gpio_init(IRQ_PIN);
     gpio_set_dir(IRQ_PIN, GPIO_OUT);

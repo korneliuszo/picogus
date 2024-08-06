@@ -10,6 +10,7 @@
 
 #include "pico_reflash.h"
 #include "flash_settings.h"
+#include "pico_pic.h"
 
 // For multifw
 #include "hardware/watchdog.h"
@@ -835,7 +836,7 @@ int main()
 #endif // M62429_PIO
     }
 
-    PIC_init();
+    PIC_IO_Init();
 
 #ifdef SOUND_MPU
     puts("Initing MIDI UART...");
