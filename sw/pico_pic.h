@@ -11,8 +11,6 @@
 #include "dosbox-x-compat.h"
 #endif
 
-#define IRQ_PIN 21 // TODO don't spread around pin definitions like this
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -38,7 +36,33 @@ extern alarm_pool_t* alarm_pool;
 int64_t PIC_HandleEvent(alarm_id_t id, void *user_data);
 
 int64_t clear_irq(alarm_id_t id, void *user_data);
+#ifdef PICOPOCKET
 
+#define IRQ0_PIN 26
+// IRQ5 line
+#define STATIC_IRQ 4
+
+static __force_inline void PIC_ActivateIRQ(void) {
+    // puts("activate irq");
+    gpio_put_masked(7<<IRQ0_PIN, STATIC_IRQ << IRQ0_PIN);
+    // alarm_pool_add_alarm_in_us(alarm_pool, 500, clear_irq, 0, true);
+}
+
+static __force_inline void PIC_DeActivateIRQ(void) {
+    gpio_put_masked(7<<IRQ0_PIN, 0 << IRQ0_PIN);
+}
+
+static __force_inline void PIC_IO_Init()
+{
+    for (int i = IRQ0_PIN; i < (IRQ0_PIN + 3); i++) {
+    	gpio_init(i);
+    	gpio_set_dir(i, GPIO_OUT);
+    	gpio_put(i, 0);
+    }
+}
+
+#else
+#define IRQ_PIN 21 // TODO don't spread around pin definitions like this
 static __force_inline void PIC_ActivateIRQ(void) {
     // puts("activate irq");
     gpio_put(IRQ_PIN, 1); 
@@ -55,6 +79,7 @@ static __force_inline void PIC_IO_Init()
     gpio_set_dir(IRQ_PIN, GPIO_OUT);
     gpio_set_drive_strength(IRQ_PIN, GPIO_DRIVE_STRENGTH_12MA);
 }
+#endif
 
 // void PIC_AddEvent(PIC_EventHandler handler, uint32_t delay, Bitu val=0);
 

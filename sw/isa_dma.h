@@ -9,7 +9,11 @@
 extern psram_spi_inst_t psram_spi;
 */
 
+#ifdef PICOPOCKET
+#include "isa_pocket.pio.h"
+#else
 #include "isa_dma.pio.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
