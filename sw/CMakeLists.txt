@@ -54,7 +54,17 @@ function(set_linker_script TARGET script)
     pico_add_link_depend(${TARGET} ${script})
 endfunction()
 
-
+if(PICOPOCKET)
+# Global definitions across all targets
+add_compile_definitions(
+    RP2_CLOCK_SPEED=366000
+    PICO_DEFAULT_UART=0
+    PICO_DEFAULT_UART_TX_PIN=-1
+    PICO_DEFAULT_UART_RX_PIN=-1
+    PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=250
+    PICOPOCKET=1
+)	
+else()
 # Global definitions across all targets
 add_compile_definitions(
     RP2_CLOCK_SPEED=366000
@@ -63,6 +73,7 @@ add_compile_definitions(
     PICO_DEFAULT_UART_RX_PIN=-1
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=250
 )
+endif()
 
 ################################################################################
 # Helper function for common firmware build
@@ -79,6 +90,11 @@ function(config_target TARGET_NAME MULTIFW)
         USE_ALARM=1
         M62429_PIO=1
     )
+if(PICOPOCKET)
+	target_compile_definitions(${TARGET_NAME} PRIVATE
+		PICOW=1
+	)
+endif()
 
     if(USE_LTO)
         # Pico SDK must be patched to allow for LTO so it is not enabled by default.
@@ -123,9 +139,13 @@ function(config_target TARGET_NAME MULTIFW)
         M62429/M62429.cpp
         pico_pic.c
     )
+	
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/M62429/M62429.pio)
+if(PICOPOCKET)
+    pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/isa_pocket.pio)
+else()
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/isa_io.pio)
-
+endif()
     if(SOUND_MPU)
         target_sources(${TARGET_NAME} PRIVATE mpu401/mpu401.c mpu401/midi.c)
         target_compile_definitions(${TARGET_NAME} PRIVATE SOUND_MPU=1)
@@ -189,6 +209,28 @@ function(build_gus TARGET_NAME MULTIFW)
         gusplay.cpp
         isa_dma.c
     )
+if(PICOPOCKET)
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+        SOUND_GUS=1
+        PSRAM=1
+        TEST_PSRAM=1
+        PSRAM_ASYNC=1
+        #PSRAM_ASYNC_DMA_IRQ=1
+        PSRAM_SPINLOCK=1
+        # PSRAM_MUTEX=1
+        # PSRAM_WAITDMA=1
+        PSRAM_CORE0=1
+        PSRAM_PIN_CS=13
+        PSRAM_PIN_SCK=14
+        PSRAM_PIN_MOSI=15
+        PSRAM_PIN_MISO=12
+        # POLLING_DMA=1
+        INTERP_CLAMP=1
+        # INTERP_LINEAR=1
+        SCALE_22K_TO_44K=1
+        # FORCE_28CH_27CH=1
+    )
+else()	
     target_compile_definitions(${TARGET_NAME} PRIVATE
         SOUND_GUS=1
         PSRAM=1
@@ -209,7 +251,11 @@ function(build_gus TARGET_NAME MULTIFW)
         SCALE_22K_TO_44K=1
         # FORCE_28CH_27CH=1
     )
+endif()
+
+if(NOT PICOPOCKET)
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/isa_dma.pio)
+endif()
     target_link_libraries(${TARGET_NAME} rp2040-psram hardware_interp)
 endfunction()
 
@@ -230,7 +276,9 @@ function(build_sb TARGET_NAME MULTIFW)
         SOUND_SB=1
         SOUND_DSP=1
     )
+if(NOT PICOPOCKET)
     pico_generate_pio_header(${TARGET_NAME} ${CMAKE_CURRENT_LIST_DIR}/isa_dma.pio)
+endif()
 endfunction()
 
 ################################################################################

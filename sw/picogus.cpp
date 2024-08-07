@@ -31,7 +31,11 @@ psram_spi_inst_t psram_spi;
 psram_spi_inst_t* async_spi_inst;
 #endif
 
+#ifdef PICOPOCKET
+#include "isa_pocket.h"
+#else
 #include "isa_io.h"
+#endif
 
 #ifdef ASYNC_UART
 #include "stdio_async_uart.h"
@@ -870,6 +874,12 @@ int main()
         }
 #endif // TEST_PSRAM
     } else {
+#ifdef PICOPOCKET
+#define SPI_T_CS 9
+        gpio_init(SPI_T_CS);
+        gpio_set_dir(SPI_T_CS, GPIO_OUT);
+        gpio_put(SPI_T_CS, 1);
+#endif
         psram_spi = psram_spi_init_clkdiv(pio1, -1, psram_clkdiv /* clkdiv */, true /* fudge */);
 #if TEST_PSRAM
         if (test_psram(&psram_spi, 97) == 1) {

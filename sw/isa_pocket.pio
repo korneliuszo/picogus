@@ -1,0 +1,94 @@
+.define public AD0_PIN 0
+.define public ATTN_PIN 11
+.define public IOCHRDY_PIN 22
+.define public ADS1_PIN 20
+.define public UART_TX_PIN -1
+.define public DACK_PIN 8
+.define public DRQ_PIN 19
+.define public TC_PIN 10
+
+.define DATA_STALL ((((6+9)*380)+1999)/1000)
+
+.program attn
+.side_set 2
+dma:
+.wrap_target
+    wait 0 gpio ATTN_PIN     side 0b11 ; AY3 
+    nop        [DATA_STALL]  side 0b11 ; AY3 - dma read
+    wait 1 gpio ATTN_PIN     side 0b01 ; AY2
+    jmp pin dma              side 0b01 ; DMA does jump
+    in pins, 8               side 0b01 ; AY2
+    nop        [DATA_STALL]  side 0b10 ; AY1
+    in pins, 8               side 0b10 ; AY1
+    nop        [DATA_STALL]  side 0b00 ; AY0
+    in pins, 8               side 0b00 ; AY0
+    nop        [DATA_STALL]  side 0b11 ; AY3
+    in pins, 8               side 0b11 ; AY3 Read data
+.wrap
+
+.program ior
+.side_set 1                       ; sideset bit 0 is IOCHRDY
+.wrap_target
+restart:
+ior:
+    out X, 32            side 0b0 ; stall until we get condition from handle_ior
+    jmp !X restart       side 0b0 ; if we get a 0 condition from handle_ior, it's not an interesting address
+    out pins, 8          side 0b1 ; output data to be written, stalling with IOCHRDY low until data is ready
+    out pindirs, 8       side 0b1 ; next 8 in pindirs is FF - set pindirs as output
+    wait 0 gpio ATTN_PIN side 0b0 ; - wait for IOR rising edge with IOCHRDY high and muxes to data
+    ; out pins, 8        side 0b0 ; next 8 in pindirs is FF - reset data pins back to high
+    out pindirs, 8       side 0b0 ; next 8 in pindirs is 00 - set pindirs back as input
+.wrap
+
+; budget: 12 instructions
+.program dma_write
+restart:
+    set pins, 0          ; deassert DRQ
+.wrap_target
+    out x, 32            ; wait to trigger DMA operation
+    set pins, 1          ; assert DRQ
+    wait 1 gpio DACK_PIN ; DACK faling edge - no sideset up to this point as it could interfere with isa_io.pio
+    set pins, 0          ; deassert DRQ, muxes to data
+    wait 1 gpio ATTN_PIN ; wait for IOW assert
+    jmp pin tc_flag      ; if TC high, transfer is over
+    in null, 24          ; write 0 to TC flag, autopush
+wait_iow:
+    wait 0 gpio ATTN_PIN ; wait for IOW deassert
+    in pins, 8           ; input data, muxes back to addr
+.wrap
+tc_flag:
+    in x, 24             ; set TC flag. X is full o' 1s
+    jmp wait_iow        
+
+% c-sdk {
+static inline void dma_write_program_init(PIO pio, uint sm, uint offset) {
+    pio_sm_config c = dma_write_program_get_default_config(offset);
+
+    // Set up AD0 bus as input
+    sm_config_set_in_pins(&c, AD0_PIN);
+    // Autopush at 8 bits
+    // sm_config_set_in_shift(&c, false, true, 9);
+    sm_config_set_in_shift(&c, false, true, 32);
+
+    // Autopull 32 bits (condition variables)
+    sm_config_set_out_shift(&c, true, true /* autopull */, 32);
+
+    // Set the pin direction for IOW and AD0 bus as input at the PIO
+    pio_sm_set_consecutive_pindirs(pio, sm, ATTN_PIN, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, AD0_PIN, 8, false);
+
+    // Config DMA pins
+    sm_config_set_set_pins(&c, DRQ_PIN, 1);
+    pio_gpio_init(pio, DRQ_PIN);
+    gpio_set_drive_strength(DRQ_PIN, GPIO_DRIVE_STRENGTH_12MA);
+    pio_sm_set_consecutive_pindirs(pio, sm, DRQ_PIN, 1, true);
+    sm_config_set_jmp_pin(&c, TC_PIN);
+    pio_sm_set_consecutive_pindirs(pio, sm, TC_PIN, 1, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, DACK_PIN, 1, false);
+
+    // Load our configuration, and jump to the start of the program
+    pio_sm_init(pio, sm, offset, &c);
+    // Set the state machine running
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}
