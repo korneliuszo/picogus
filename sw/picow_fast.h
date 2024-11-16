@@ -14,4 +14,11 @@
 #define PICO_FLASH_SPI_CLKDIV 4
 
 #include "boards/pico_w.h"
+
+#ifdef PICOPOCKET
+#undef PICO_DEFAULT_UART
+#undef PICO_DEFAULT_UART_TX_PIN
+#undef PICO_DEFAULT_UART_RX_PIN
+#endif
+
 #endif

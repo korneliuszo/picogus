@@ -60,9 +60,6 @@ if(PICOPOCKET)
 # Global definitions across all targets
 add_compile_definitions(
     RP2_CLOCK_SPEED=366000
-    PICO_DEFAULT_UART=0
-    PICO_DEFAULT_UART_TX_PIN=-1
-    PICO_DEFAULT_UART_RX_PIN=-1
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=250
     PICOPOCKET=1
 )	
