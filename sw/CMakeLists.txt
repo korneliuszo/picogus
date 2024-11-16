@@ -92,11 +92,6 @@ function(config_target TARGET_NAME MULTIFW)
         USE_ALARM=1
         M62429_PIO=1
     )
-if(PICOPOCKET)
-	target_compile_definitions(${TARGET_NAME} PRIVATE
-		PICOW=1
-	)
-endif()
 
     if(USE_LTO)
         # Pico SDK must be patched to allow for LTO so it is not enabled by default.
