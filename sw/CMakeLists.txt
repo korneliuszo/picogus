@@ -2,6 +2,12 @@
 
 cmake_minimum_required(VERSION 3.13)
 
+set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR})
+if(NOT PICO_BOARD)
+    set(PICO_BOARD "picogus2")
+    message("PICO_BOARD not set, defaulting to ${PROJECT_TYPE}")
+endif()
+set(PICO_COPY_TO_RAM 1)
 
 # Initialise pico_sdk from installed location
 # (note this can come from environment, CMake cache etc)
@@ -21,10 +27,6 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 include(pico_extras_import.cmake)
-
-set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR})
-set(PICO_BOARD picogus2)
-set(PICO_COPY_TO_RAM 1)
 
 # Tell the Pico SDK to use our local tinyusb instead of the one included in the SDK
 # This is needed to support tusb_xinput
@@ -58,9 +60,6 @@ if(PICOPOCKET)
 # Global definitions across all targets
 add_compile_definitions(
     RP2_CLOCK_SPEED=366000
-    PICO_DEFAULT_UART=0
-    PICO_DEFAULT_UART_TX_PIN=-1
-    PICO_DEFAULT_UART_RX_PIN=-1
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=250
     PICOPOCKET=1
 )	
@@ -90,11 +89,6 @@ function(config_target TARGET_NAME MULTIFW)
         USE_ALARM=1
         M62429_PIO=1
     )
-if(PICOPOCKET)
-	target_compile_definitions(${TARGET_NAME} PRIVATE
-		PICOW=1
-	)
-endif()
 
     if(USE_LTO)
         # Pico SDK must be patched to allow for LTO so it is not enabled by default.
@@ -196,7 +190,7 @@ endfunction()
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tusb_xinput)
 add_subdirectory(rp2040-psram)
 add_subdirectory(opl)
-
+add_subdirectory(ne2000)
 
 ################################################################################
 # Build GUS firmware
@@ -359,6 +353,31 @@ function(build_usb TARGET_NAME MULTIFW)
 endfunction()
 
 
+function(build_ne2k TARGET_NAME MULTIFW)
+    config_target(${TARGET_NAME} ${MULTIFW})
+    pico_set_program_name(${TARGET_NAME} "picogus-ne2k")
+    # set(USB_JOYSTICK FALSE)
+    # set(PICO_BOARD PICO_W) # For now, until USB Dongle
+    # set(PICO_BOARD picow-fast)
+    #set(PICO_CYW43_SUPPORTED "1")
+    #pico_register_common_scope_var(PICO_CYW43_SUPPORTED)
+    target_compile_definitions(${TARGET_NAME} PRIVATE
+       NE2000=1
+       PICOW=1
+       # CYW43_RESOURCE_ATTRIBUTE="__in_flash()"
+       CYW43_CONFIG_FILE="cyw43_firmware.h"
+       CYW43_PIO_CLOCK_DIV_INT=3
+    )
+    target_sources(${TARGET_NAME} PRIVATE
+        ne2000play.cpp
+    )
+    target_link_libraries(
+        ${TARGET_NAME}
+        ne2000        
+    )
+endfunction()
+
+
 ################################################################################
 # Build "multifw" - all firmwares in one UF2
 if(PROJECT_TYPE STREQUAL "MULTIFW")
@@ -484,6 +503,9 @@ elseif(PROJECT_TYPE STREQUAL "CMS")
 elseif(PROJECT_TYPE STREQUAL "USB")
     set(FW_TARGET pg-usb)
     build_usb(pg-usb FALSE)
+elseif(PROJECT_TYPE STREQUAL "NE2K")
+    set(FW_TARGET pg-ne2k)
+    build_ne2k(pg-ne2k FALSE)
 endif()
 
 ################################################################################
