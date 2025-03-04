@@ -6,7 +6,6 @@
 #define IOW_PIO_SM 0
 #define IOR_PIO_SM 1
 
-
 constexpr uint32_t iow_rxempty = 1u << (PIO_FSTAT_RXEMPTY_LSB + IOW_PIO_SM);
 __force_inline bool iow_has_data() {
     return !(pio0->fstat & iow_rxempty);
@@ -17,10 +16,15 @@ __force_inline bool ior_has_data() {
     return !(pio0->fstat & ior_rxempty);
 }
 
-constexpr float iow_clkdiv = (float)rp2_clock / 183000.0;
-
 __force_inline void handle_iow(uint16_t port,uint8_t iow_read);
 __force_inline void handle_ior(uint16_t port);
+
+__force_inline void isa_int_prepare()
+{
+    gpio_init(IRQ_PIN);
+    gpio_set_dir(IRQ_PIN, GPIO_OUT);
+    gpio_set_drive_strength(IRQ_PIN, GPIO_DRIVE_STRENGTH_12MA);
+}
 
 __force_inline void isa_prepare()
 {

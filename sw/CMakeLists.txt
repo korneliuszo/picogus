@@ -19,7 +19,7 @@ set(PICO_COPY_TO_RAM 1)
 include(pico_sdk_import.cmake)
 
 project(picogus
-    VERSION "2.1.0"
+    VERSION "2.2.0"
     LANGUAGES C CXX ASM
 )
 
@@ -61,6 +61,8 @@ if(PICOPOCKET)
 add_compile_definitions(
     RP2_CLOCK_SPEED=366000
     PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=250
+    PICO_DEFAULT_UART_TX_PIN=-1
+    PICO_DEFAULT_UART_RX_PIN=-1
     PICOPOCKET=1
 )	
 else()
@@ -86,7 +88,6 @@ function(config_target TARGET_NAME MULTIFW)
         PICO_AUDIO_I2S_DATA_PIN=16
         PICO_AUDIO_I2S_CLOCK_PIN_BASE=17
         PICO_AUDIO_I2S_PIO=1
-        USE_ALARM=1
         M62429_PIO=1
     )
 
@@ -356,15 +357,9 @@ endfunction()
 function(build_ne2k TARGET_NAME MULTIFW)
     config_target(${TARGET_NAME} ${MULTIFW})
     pico_set_program_name(${TARGET_NAME} "picogus-ne2k")
-    # set(USB_JOYSTICK FALSE)
-    # set(PICO_BOARD PICO_W) # For now, until USB Dongle
-    # set(PICO_BOARD picow-fast)
-    #set(PICO_CYW43_SUPPORTED "1")
-    #pico_register_common_scope_var(PICO_CYW43_SUPPORTED)
     target_compile_definitions(${TARGET_NAME} PRIVATE
        NE2000=1
        PICOW=1
-       # CYW43_RESOURCE_ATTRIBUTE="__in_flash()"
        CYW43_CONFIG_FILE="cyw43_firmware.h"
        CYW43_PIO_CLOCK_DIV_INT=3
     )
@@ -461,7 +456,7 @@ if(PROJECT_TYPE STREQUAL "MULTIFW")
     pico_add_extra_outputs(bootloader)
     # set_linker_script(bootloader ${CMAKE_SOURCE_DIR}/multifw/bootloader.ld)
     target_include_directories(bootloader PRIVATE ${CMAKE_BINARY_DIR}/generated/multifw)
-    pico_enable_stdio_uart(bootloader 1)
+    pico_enable_stdio_uart(bootloader 0)
     pico_enable_stdio_usb(bootloader 0)
     pico_enable_stdio_semihosting(bootloader 0)
     add_dependencies(bootloader generate_flash_firmware_h)

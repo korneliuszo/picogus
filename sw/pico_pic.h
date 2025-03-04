@@ -1,3 +1,21 @@
+/*
+ *  Copyright (C) 2022-2024  Ian Scott
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ */
+
 #pragma once
 
 #include <stdint.h>
@@ -5,10 +23,12 @@
 #include "pico/time.h"
 #include "hardware/gpio.h"
 
-#ifdef DOSBOX_STAGING
-#include "dosboxcompat.h"
-#else
 #include "dosbox-x-compat.h"
+
+#ifdef PICOPOCKET
+#define IA0_PIN 26
+#else
+#define IRQ_PIN 21 // TODO don't spread around pin definitions like this
 #endif
 
 #ifdef __cplusplus
@@ -20,110 +40,43 @@ typedef uint32_t (* PIC_EventHandler)(Bitu val);
 typedef struct {
     PIC_EventHandler handler;
     Bitu value;
-#ifdef USE_ALARM
     alarm_id_t alarm_id;
-#else
-    uint32_t deadline;
-    bool active;
-#endif
 } PIC_TimerEvent;
-
-#define PIC_MAX_TIMERS 8
-extern PIC_TimerEvent timerEvents[PIC_MAX_TIMERS];
 
 extern alarm_pool_t* alarm_pool;
 
 int64_t PIC_HandleEvent(alarm_id_t id, void *user_data);
 
-int64_t clear_irq(alarm_id_t id, void *user_data);
+static __force_inline void PIC_ActivateIRQ(void) {
+    // puts("activate irq");
 #ifdef PICOPOCKET
-
-#define IRQ0_PIN 26
-// IRQ5 line
-#define STATIC_IRQ 4
-
-static __force_inline void PIC_ActivateIRQ(void) {
-    // puts("activate irq");
-    gpio_put_masked(7<<IRQ0_PIN, STATIC_IRQ << IRQ0_PIN);
-    // alarm_pool_add_alarm_in_us(alarm_pool, 500, clear_irq, 0, true);
-}
-
-static __force_inline void PIC_DeActivateIRQ(void) {
-    gpio_put_masked(7<<IRQ0_PIN, 0 << IRQ0_PIN);
-}
-
-static __force_inline void PIC_IO_Init()
-{
-    for (int i = IRQ0_PIN; i < (IRQ0_PIN + 3); i++) {
-    	gpio_init(i);
-    	gpio_set_dir(i, GPIO_OUT);
-    	gpio_put(i, 0);
-    }
-}
-
+	gpio_put_masked(7<<IA0_PIN,4<<IA0_PIN); //IRQ5
 #else
-#define IRQ_PIN 21 // TODO don't spread around pin definitions like this
-static __force_inline void PIC_ActivateIRQ(void) {
-    // puts("activate irq");
     gpio_put(IRQ_PIN, 1); 
+#endif
     // alarm_pool_add_alarm_in_us(alarm_pool, 500, clear_irq, 0, true);
 }
 
 static __force_inline void PIC_DeActivateIRQ(void) {
+#ifdef PICOPOCKET
+	gpio_put_masked(7<<IA0_PIN,0<<IA0_PIN);
+#else
     gpio_put(IRQ_PIN, 0); 
+#endif
 }
 
-static __force_inline void PIC_IO_Init()
-{
-    gpio_init(IRQ_PIN);
-    gpio_set_dir(IRQ_PIN, GPIO_OUT);
-    gpio_set_drive_strength(IRQ_PIN, GPIO_DRIVE_STRENGTH_12MA);
-}
-#endif
-
-// void PIC_AddEvent(PIC_EventHandler handler, uint32_t delay, Bitu val=0);
-
-static __force_inline void PIC_AddEvent(PIC_EventHandler handler, uint32_t delay, Bitu val) {
-    // printf("add event: %x %x %d\n", handler, val, delay);
-    // find free slot - TBD if this is too jittery
-    int i;
-    for (i = 0; i < PIC_MAX_TIMERS; ++i) {
-        if (
-#ifdef USE_ALARM
-            !timerEvents[i].alarm_id
-#else
-            !timerEvents[i].active
-#endif
-        ) {
-            break;
-        }
-    }
-    timerEvents[i].handler = handler;
-    timerEvents[i].value = val;
-#ifdef USE_ALARM
-    // timerEvents[val].alarm_id = add_alarm_in_us(delay, PIC_HandleEvent, timerEvents + val, true);
-    // alarm_pool_cancel_alarm(alarm_pool, timerEvents[val].alarm_id);
-    timerEvents[i].alarm_id = alarm_pool_add_alarm_in_us(alarm_pool, delay, PIC_HandleEvent, timerEvents + i, true);
-#else
-    timerEvents[i].deadline = time_us_32() + delay;
-    timerEvents[i].active = true;
-#endif
+static __force_inline void PIC_AddEvent(PIC_TimerEvent* event, uint32_t delay, Bitu val) {
+    // event->handler = handler;
+    event->value = val;
+    // alarm_pool_cancel_alarm(alarm_pool, event->alarm_id);
+    event->alarm_id = alarm_pool_add_alarm_in_us(alarm_pool, delay, PIC_HandleEvent, event, true);
     // gpio_put(PICO_DEFAULT_LED_PIN, 1);
 }
 
-void PIC_RemoveEvents(PIC_EventHandler handler);
+void PIC_RemoveEvent(PIC_TimerEvent* event);
 
 void PIC_Init(void);
 
-#ifndef USE_ALARM
-static __force_inline void PIC_HandleEvents() {
-    for (int i = 0; i < PIC_MAX_TIMERS; ++i) {
-        if (timerEvents[i].active && timerEvents[i].deadline <= time_us_32()) {
-            PIC_HandleEvent(0, &timerEvents[i]);
-        }
-    }
-}
-#endif
 
 #ifdef __cplusplus
 }

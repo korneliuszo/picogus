@@ -1,3 +1,21 @@
+/*
+ *  Copyright (C) 2022-2024  Ian Scott
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -11,7 +29,6 @@
 
 #include "pico_reflash.h"
 #include "flash_settings.h"
-#include "pico_pic.h"
 
 // For multifw
 #include "hardware/watchdog.h"
@@ -21,16 +38,16 @@
 
 board_type_t BOARD_TYPE;
 
-constexpr uint32_t rp2_clock = RP2_CLOCK_SPEED;
-constexpr float psram_clkdiv = (float)rp2_clock / 200000.0;
-constexpr float pwm_clkdiv = (float)rp2_clock / 22727.27;
-
-
 #ifdef PSRAM
 #include "psram_spi.h"
 psram_spi_inst_t psram_spi;
 psram_spi_inst_t* async_spi_inst;
 #endif
+
+constexpr uint32_t rp2_clock = RP2_CLOCK_SPEED;
+constexpr float psram_clkdiv = (float)rp2_clock / 200000.0;
+constexpr float pwm_clkdiv = (float)rp2_clock / 22727.27;
+constexpr float iow_clkdiv = (float)rp2_clock / 183000.0;
 
 #ifdef PICOPOCKET
 #include "isa_pocket.h"
@@ -152,7 +169,7 @@ __force_inline void select_picogus(uint8_t value) {
         break;
     case MODE_BOOTMODE: // Mode (GUS, OPL, MPU, etc...)
         break;
-    case MODE_GUSPORT: // GUS Base port
+	case MODE_GUSPORT: // GUS Base port
     case MODE_OPLPORT: // Adlib Base port
     case MODE_SBPORT: // SB Base port
     case MODE_MPUPORT: // MPU Base port
@@ -193,7 +210,6 @@ __force_inline void select_picogus(uint8_t value) {
         break;
     case MODE_WIFIAPPLY:
     case MODE_WIFISTAT:
-    case MODE_WIFISCAN:
         break;
     case MODE_SAVE: // Select save settings register
     case MODE_REBOOT: // Select reboot register
@@ -338,8 +354,6 @@ __force_inline void write_picogus_high(uint8_t value) {
         multicore_fifo_push_blocking(FIFO_WIFI_STATUS);
 #endif
         break;
-    case MODE_WIFISCAN:
-        break;
     // For multifw
     case MODE_BOOTMODE:
         settings.startupMode = value;
@@ -454,10 +468,6 @@ __force_inline uint8_t read_picogus_high(void) {
         return 0;
 #endif
         break;
-    /*
-    case MODE_WIFISCAN:
-        return PG_Wifi_ReadScanStr();
-    */
     case MODE_HWTYPE: // Hardware version
         return BOARD_TYPE;
     case MODE_FLASH:
@@ -820,16 +830,26 @@ __force_inline void handle_ior(uint16_t port) {
     }
 }
 
+#ifdef USE_IRQ
+void iow_isr(void) {
+    /* //printf("ints %x\n", pio0->ints0); */
+    handle_iow();
+    // pio_interrupt_clear(pio0, pio_intr_sm0_rxnempty_lsb);
+    irq_clear(PIO0_IRQ_0);
+}
+void ior_isr(void) {
+    handle_ior();
+    // pio_interrupt_clear(pio0, PIO_INTR_SM0_RXNEMPTY_LSB);
+    irq_clear(PIO0_IRQ_1);
+}
+#endif
+
 void err_blink(void) {
     for (;;) {
         //gpio_xor_mask(LED_PIN);//need to abscrat  led functions out to handle chipdown vs  picow
         busy_wait_ms(100);
     }
 }
-
-#ifndef USE_ALARM
-#include "pico_pic.h"
-#endif
 
 #include "hardware/structs/xip_ctrl.h"
 int main()
@@ -925,7 +945,7 @@ int main()
 #endif // M62429_PIO
     }
 
-    PIC_IO_Init();
+	isa_int_prepare();
 
 #ifdef SOUND_MPU
     puts("Initing MIDI UART...");
@@ -943,6 +963,12 @@ int main()
 #ifdef PSRAM_CORE0
 #ifdef PSRAM
     puts("Initing PSRAM...");
+#ifdef PICOPOCKET
+#define SPI_T_CS 9
+    gpio_init(SPI_T_CS);
+    gpio_set_dir(SPI_T_CS, GPIO_OUT);
+    gpio_put(SPI_T_CS, 1);
+#endif
     // Try different PSRAM strategies
     if (BOARD_TYPE == PICOGUS_2) {
         psram_spi = psram_spi_init_clkdiv(pio1, -1, psram_clkdiv /* clkdiv */, false /* fudge */);
@@ -959,12 +985,6 @@ int main()
         }
 #endif // TEST_PSRAM
     } else {
-#ifdef PICOPOCKET
-#define SPI_T_CS 9
-        gpio_init(SPI_T_CS);
-        gpio_set_dir(SPI_T_CS, GPIO_OUT);
-        gpio_put(SPI_T_CS, 1);
-#endif
         psram_spi = psram_spi_init_clkdiv(pio1, -1, psram_clkdiv /* clkdiv */, true /* fudge */);
 #if TEST_PSRAM
         if (test_psram(&psram_spi, 97) == 1) {
@@ -1053,18 +1073,11 @@ extern void PIC_DeActivateIRQ(void);
 
     gpio_xor_mask(LED_PIN);
 
-#ifndef USE_ALARM
-    PIC_Init();
-#endif
-
     processSettings();
 
     for (;;) {
 #ifndef USE_IRQ
-    	isa_poll();
-#endif
-#ifndef USE_ALARM
-        PIC_HandleEvents();
+        isa_poll();
 #endif
 #ifdef POLLING_DMA
         process_dma();

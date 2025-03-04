@@ -7,6 +7,8 @@
 #define IOW_PIO_SM 1
 #define IOR_PIO_SM 1
 
+constexpr uint IA0_PIN = 26;
+
 constexpr uint32_t attn_rxempty = 1u << (PIO_FSTAT_RXEMPTY_LSB + ATTN_PIO_SM);
 __force_inline bool attn_has_data() {
     return !(pio0->fstat & attn_rxempty);
@@ -14,6 +16,16 @@ __force_inline bool attn_has_data() {
 
 __force_inline void handle_iow(uint16_t port,uint8_t iow_read);
 __force_inline void handle_ior(uint16_t port);
+
+__force_inline void isa_int_prepare()
+{
+    for(uint pin=IA0_PIN;pin<IA0_PIN+3;pin++)
+    {
+        gpio_init(pin);
+        gpio_put(pin, 0);
+        gpio_set_dir(pin,true);
+    }
+}
 
 
 __force_inline void isa_prepare()
