@@ -69,6 +69,14 @@ static const Settings defaultSettings = {
     .WiFi = {
         .ssid = {0},
         .password = {0}
+    },
+    .CD = {
+        .basePort = 0x250,
+        .autoAdvance = true
+    },
+    .MMB = {
+        // Mindscape Music Board defaults to off because its port is so common
+        .basePort = 0xffff
     }
 };
 

@@ -31,14 +31,26 @@
 
 #include "opl.h"
 extern "C" void OPL_Pico_simple(int16_t *buffer, uint32_t nsamples);
-extern "C" void OPL_Pico_PortWrite(opl_port_t, unsigned int);
+extern "C" void OPL_Pico_WriteRegister(unsigned int reg_num, unsigned int value);
 
-#ifdef SOUND_SB
+#include "audio_fifo.h"
+#if SOUND_SB
+#if SB_BUFFERLESS
 extern int16_t sbdsp_sample();
-#endif
+#else // SB_BUFFERLESS
+extern uint16_t sbdsp_sample_rate();
+extern uint16_t sbdsp_muted();
+extern audio_fifo_t* sbdsp_fifo_peek();
+#endif // SB_BUFFERLESS
+#endif // SOUND_SB
 #if defined(SOUND_SB) || defined(USB_MOUSE) || defined(SOUND_MPU)
 #include "pico_pic.h"
 #endif
+
+#if CDROM
+#include "cdrom/cdrom.h"
+// extern cdrom_t cdrom;
+#endif // CDROM
 
 #include "clamp.h"
 
@@ -69,16 +81,17 @@ bi_decl(bi_3pins_with_names(PICO_AUDIO_I2S_DATA_PIN, "I2S DIN", PICO_AUDIO_I2S_C
 
 
 /*
-Minimum expected sample rate from DSP should be 8000hz?
+Minimum expected aample rate from DSP should be 8000hz?
 Maximum number of DSP to process at once should be 64.
 49716 / 8000 = 6.2145 * 64 = 397
 */
-#define SAMPLES_PER_BUFFER 512
+#define SAMPLES_PER_BUFFER 256
 
 struct audio_buffer_pool *init_audio() {
 
     static audio_format_t audio_format = {
-            .sample_freq = 49716,
+            //.sample_freq = 49716,
+            .sample_freq = 44100,
             .format = AUDIO_BUFFER_FORMAT_PCM_S16,
             .channel_count = 2,
     };
@@ -111,6 +124,23 @@ struct audio_buffer_pool *init_audio() {
     return producer_pool;
 }
 
+/* Fixed-point format: Q16.16 (16 bits integer, 16 bits fractional) */
+static constexpr uint32_t FRAC_BITS = 16;
+static constexpr uint32_t FRAC_MASK = (1u << FRAC_BITS) - 1;
+
+static inline uint32_t fixed_ratio(uint16_t a, uint16_t b) {
+    return ((uint32_t)a << FRAC_BITS) / b;
+}
+
+/**
+ * Linear interpolation in fixed-point
+ * v0 and v1 are sample values, frac is the fractional position
+ */
+static inline int16_t lerp_fixed(int16_t v0, int16_t v1, uint32_t frac) {
+    return v0 + (int16_t)(((int32_t)(v1 - v0) * frac) >> FRAC_BITS);
+}
+
+
 void play_adlib() {
     puts("starting core 1");
     // flash_safe_execute_core_init();
@@ -134,31 +164,121 @@ void play_adlib() {
 
     struct audio_buffer_pool *ap = init_audio();
 
-    for (;;) {
-        bool notfirst = false;
-        while (opl_buffer.tail != opl_buffer.head) {
-            if (!notfirst) {
-#ifndef PICOW
-                gpio_xor_mask(LED_PIN);
+#if SOUND_SB && !SB_BUFFERLESS
+    // uint8_t sb_samples[512] = {128};
+    audio_fifo_t* sb_fifo = sbdsp_fifo_peek();
 #endif
-                notfirst = true;
-            }
-            auto cmd = opl_buffer.cmds[opl_buffer.tail];
-            OPL_Pico_PortWrite((opl_port_t)cmd.addr, cmd.data);
-            // putchar('.');
-            ++opl_buffer.tail;
-        }
+#ifdef CDROM
+    int16_t cd_samples[SAMPLES_PER_BUFFER * 2];
+    bool has_cd_samples;
+#endif
+
+#ifdef SOUND_SB
+    // int16_t sb_sample = 0;
+    uint32_t sb_ratio = 0;
+    uint32_t sb_pos = 0;
+    uint32_t sb_index_old = 0xffffffff;
+    uint32_t sb_index = 0;
+    uint32_t sb_frac = 0;
+    // uint32_t sb_sample_idx = 0x0;
+    uint32_t sb_left = 0;
+#endif
+
+    uint32_t cd_left = 0;
+    uint32_t cd_index = 0;
+
+    constexpr uint32_t OPL_SAMPLE_COUNT = 8;
+    constexpr uint32_t OPL_BUFFER_BITS = (OPL_SAMPLE_COUNT << 1) - 1;
+    int16_t opl_samples[OPL_SAMPLE_COUNT << 1] = {0};
+    uint32_t opl_ratio = fixed_ratio(49716, 44100);
+    printf("opl_ratio: %x ", opl_ratio);
+    uint32_t opl_pos = 0;
+    uint32_t opl_index = 0;
+    uint32_t opl_sample_idx = 0x0;
+
+    // int16_t cd_samples[1024] = {0};
+
+    int32_t accum[2] = {0};
+    for (;;) {
+#if CDROM
+        has_cd_samples = cdrom_audio_callback_simple(&cdrom, cd_samples, SAMPLES_PER_BUFFER << 1, true);
+#endif
         struct audio_buffer *buffer = take_audio_buffer(ap, true);
         int16_t *samples = (int16_t *) buffer->buffer->bytes;
-        int16_t opl_sample;
-        OPL_Pico_simple(&opl_sample, 1);
-#ifdef SOUND_SB
-        samples[0] = samples[1] = clamp16((int32_t)sbdsp_sample() + (int32_t)opl_sample);
-#else
-        samples[0] = samples[1] = opl_sample;
+        // Do mixing with lerp
+        //
+#if !SB_BUFFERLESS
+        for (int i = 0; i < SAMPLES_PER_BUFFER; ++i) {
+#endif // !SB_BUFFERLESS
+            accum[0] = accum[1] = 0;
+#if CDROM
+            if (has_cd_samples) {
+                accum[0] += cd_samples[i << 1];
+                accum[1] += cd_samples[(i << 1) + 1];
+            }
+#endif // CDROM
+            uint32_t opl_index = (opl_pos >> FRAC_BITS);
+            // uint32_t opl_index = i;
+            uint32_t opl_frac = opl_pos & FRAC_MASK;
+            opl_pos += opl_ratio;
+#if !SB_BUFFERLESS // don't support OPL in bufferless for now
+            if (
+                ((opl_index & OPL_SAMPLE_COUNT) && opl_sample_idx != 0x0) ||
+                (!(opl_index & OPL_SAMPLE_COUNT) && opl_sample_idx != OPL_SAMPLE_COUNT)
+            ) {
+                opl_sample_idx = (opl_index + OPL_SAMPLE_COUNT) & OPL_SAMPLE_COUNT;
+                // bool notfirst = false;
+                while (opl_buffer.tail != opl_buffer.head) {
+                    // if (!notfirst) {
+#ifndef PICOW
+                    //     gpio_xor_mask(LED_PIN);
 #endif
-        buffer->sample_count=1;
-        // putchar((unsigned char)buffer->buffer->bytes[1]);
+                    //     notfirst = true;
+                    // }
+                    auto cmd = opl_buffer.cmds[opl_buffer.tail];
+                    OPL_Pico_WriteRegister(cmd.addr, cmd.data);
+                    ++opl_buffer.tail;
+                }
+                OPL_Pico_simple(opl_samples + opl_sample_idx, OPL_SAMPLE_COUNT);
+            }
+            int32_t opl_sample = lerp_fixed(
+                opl_samples[opl_index & OPL_BUFFER_BITS],
+                opl_samples[(opl_index + 1) & OPL_BUFFER_BITS],
+                opl_frac);
+            accum[0] += opl_sample;
+            accum[1] += opl_sample;
+#if SOUND_SB
+            if (!sb_left) {
+                // putchar('t');
+                uint32_t num_samples = 256;
+                sb_left = fifo_take_samples(sb_fifo, num_samples);
+            }
+            if (sb_left) {
+                sb_index = (sb_pos >> FRAC_BITS);
+                if (sb_index_old != sb_index) {
+                    sb_left--;
+                }
+                sb_index_old = sb_index;
+                sb_frac = sb_pos & FRAC_MASK;
+                sb_ratio = fixed_ratio(sbdsp_sample_rate(), 44100);
+                sb_pos += sb_ratio;
+                // putchar('p');
+                if (!sbdsp_muted()) {
+                    int16_t sb_sample = sb_fifo->buffer[sb_index & AUDIO_FIFO_BITS];
+                    accum[0] += sb_sample;
+                    accum[1] += sb_sample;
+                }
+            }
+#endif // SOUND_SB
+            samples[i << 1] = clamp16(accum[0]);
+            samples[(i << 1) + 1] = clamp16(accum[1]);
+        }
+        buffer->sample_count = SAMPLES_PER_BUFFER;
+#else // !SB_BUFFERLESS
+        samples[0] = clamp16(accum[0]);
+        samples[1] = clamp16(accum[1]);
+        buffer->sample_count = 1;
+#endif // !SB_BUFFERLESS
         give_audio_buffer(ap, buffer);
 #ifdef USB_STACK
         // Service TinyUSB events
@@ -172,7 +292,10 @@ void play_adlib() {
         uartemu_core1_task();
 #endif
 #ifdef SOUND_MPU
-        send_midi_bytes(1);
+        send_midi_bytes(8);
+#endif
+#ifdef CDROM
+        cdrom_tasks(&cdrom);
 #endif
     }
 }

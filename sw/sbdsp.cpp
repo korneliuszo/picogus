@@ -37,6 +37,9 @@ extern uint LED_PIN;
 
 #include "isa_dma.h"
 
+#ifndef MAX
+#define MAX(x, y) (((x) > (y)) ? (x) : (y))
+#endif
 
 static irq_handler_t SBDSP_DMA_isr_pt;
 static dma_inst_t dma_config;
@@ -68,6 +71,7 @@ static dma_inst_t dma_config;
 #define DSP_MIDI_WRITE_POLL     0x38
 #define DSP_SET_TIME_CONSTANT   0x40
 #define DSP_DMA_PAUSE           0xD0
+#define DSP_EXIT_DMA_8          0xDA
 #define DSP_DAC_PAUSE_DURATION  0x80    // Pause DAC for a duration, then generate an interrupt. Used by Tyrian.
 #define DSP_ENABLE_SPEAKER      0xD1
 #define DSP_DISABLE_SPEAKER     0xD3
@@ -81,7 +85,9 @@ static dma_inst_t dma_config;
 #define DSP_IRQ                 0xF2
 #define DSP_CHECKSUM            0xF4
 
-#define DSP_DMA_FIFO_SIZE       1024
+// #define DSP_DMA_FIFO_SIZE       256
+// constexpr uint16_t DSP_DMA_FIFO_BITS = DSP_DMA_FIFO_SIZE - 1;
+#include "audio_fifo.h"
 
 #define DSP_UNUSED_STATUS_BITS_PULLED_HIGH 0x7F
 
@@ -93,11 +99,8 @@ typedef struct sbdsp_t {
     uint8_t current_command_index;
 
     uint16_t dma_interval;     
-    // int16_t dma_interval_trim;
-    uint8_t dma_transfer_size;
-    uint8_t  dma_buffer[DSP_DMA_FIFO_SIZE];
-    volatile uint16_t dma_buffer_tail;
-    volatile uint16_t dma_buffer_head;
+    int16_t dma_interval_trim;
+    audio_fifo_t audio_fifo;
 
     uint16_t dac_pause_duration;
     uint8_t dac_pause_duration_low;
@@ -107,12 +110,7 @@ typedef struct sbdsp_t {
     uint32_t dma_sample_count_rx;
 
     uint8_t time_constant;
-    // uint16_t sample_rate;
-    // uint32_t sample_step;
-    // uint64_t cycle_us;
-
-    // uint64_t sample_offset;  
-    // uint8_t sample_factor;
+    uint16_t sample_rate;
                 
     bool autoinit;    
     bool dma_enabled;
@@ -126,48 +124,38 @@ typedef struct sbdsp_t {
 
     uint8_t reset_state;  
    
+#ifdef SB_BUFFERLESS
     volatile int16_t cur_sample;
+#endif
 } sbdsp_t;
 
 static sbdsp_t sbdsp;
 
-#if 0
-uint16_t sbdsp_fifo_level() {
-    if(sbdsp.dma_buffer_tail < sbdsp.dma_buffer_head) return DSP_DMA_FIFO_SIZE - (sbdsp.dma_buffer_head - sbdsp.dma_buffer_tail);
-    return sbdsp.dma_buffer_tail - sbdsp.dma_buffer_head;
-}
-void sbdsp_fifo_rx(uint8_t byte) {    
-    if(sbdsp_fifo_level()+1 == DSP_DMA_FIFO_SIZE) printf("OVERRRUN");
-    sbdsp.dma_buffer[sbdsp.dma_buffer_tail]=byte;        
-    sbdsp.dma_buffer_tail++;
-    if(sbdsp.dma_buffer_tail == DSP_DMA_FIFO_SIZE) sbdsp.dma_buffer_tail=0;
-}
-void sbdsp_fifo_clear() {    
-    sbdsp.dma_buffer_head=sbdsp.dma_buffer_tail;
-}
-bool sbdsp_fifo_half() {
-    if(sbdsp_fifo_level() >= (DSP_DMA_FIFO_SIZE/2)) return true;
-    return false;
+#ifndef SB_BUFFERLESS
+
+constexpr uint32_t AUDIO_FIFO_SIZE_HALF = AUDIO_FIFO_SIZE >> 1;
+
+static int16_t __force_inline dma_interval_calc() {
+    uint32_t level = fifo_level(&sbdsp.audio_fifo);
+    if (level < AUDIO_FIFO_SIZE_HALF) {
+        return sbdsp.dma_interval - 5;
+    } else {
+        return sbdsp.dma_interval + 5;
+    }
 }
 
-uint16_t sbdsp_fifo_tx(char *buffer,uint16_t len) {
-    uint16_t level = sbdsp_fifo_level();
-    if(!level) return 0;
-    if(!len) return 0;
-    if(len > level) len=level;
-    if(sbdsp.dma_buffer_head < sbdsp.dma_buffer_tail || ((sbdsp.dma_buffer_head+len) < DSP_DMA_FIFO_SIZE)) {          
-            memcpy(buffer,sbdsp.dma_buffer+sbdsp.dma_buffer_head,len);
-            sbdsp.dma_buffer_head += len;
-            return len;
-    }           
-    else {                
-        memcpy(buffer,sbdsp.dma_buffer+sbdsp.dma_buffer_head,DSP_DMA_FIFO_SIZE-sbdsp.dma_buffer_head);
-        memcpy(buffer+256-sbdsp.dma_buffer_head,sbdsp.dma_buffer,len-(DSP_DMA_FIFO_SIZE-sbdsp.dma_buffer_head));        
-        sbdsp.dma_buffer_head += (len-DSP_DMA_FIFO_SIZE);
-        return len;
+void __force_inline sbdsp_fifo_rx(uint8_t byte) {
+    if (!fifo_add_sample(&sbdsp.audio_fifo, (int16_t)(byte ^ 0x80) << 8)) {
+        putchar('O');
     }
-    return 0;    
 }
+void __force_inline sbdsp_fifo_clear() {    
+    fifo_reset(&sbdsp.audio_fifo);
+}
+audio_fifo_t* sbdsp_fifo_peek() {
+    return &sbdsp.audio_fifo;
+}
+
 #endif
 
 static uint32_t DSP_DMA_EventHandler(Bitu val);
@@ -178,18 +166,19 @@ static PIC_TimerEvent DSP_DMA_Event = {
 static __force_inline void sbdsp_dma_disable() {
     sbdsp.dma_enabled=false;    
     PIC_RemoveEvent(&DSP_DMA_Event);  
+#ifdef SB_BUFFERLESS
     sbdsp.cur_sample = 0;  // zero current sample
+#endif
 }
 
 static __force_inline void sbdsp_dma_enable() {    
     if(!sbdsp.dma_enabled) {
-        // sbdsp_fifo_clear();
-        sbdsp.dma_enabled=true;            
+        sbdsp.dma_enabled=true;
         PIC_AddEvent(&DSP_DMA_Event, sbdsp.dma_interval, 0);
     }
-    else {
-        //printf("INFO: DMA Already Enabled");        
-    }
+    // else {
+    //     printf("INFO: DMA Already Enabled");        
+    // }
 }
 
 static uint32_t DSP_DMA_EventHandler(Bitu val) {
@@ -197,9 +186,14 @@ static uint32_t DSP_DMA_EventHandler(Bitu val) {
     uint32_t current_interval;
     sbdsp.dma_sample_count_rx++;    
 
+#ifdef SB_BUFFERLESS
     current_interval = sbdsp.dma_interval;
+#else
+    current_interval = dma_interval_calc();
+#endif
+    // printf("%u\n", current_interval);
 
-    if(sbdsp.dma_sample_count_rx <= sbdsp.dma_sample_count) {        
+    if(sbdsp.dma_sample_count_rx <= sbdsp.dma_sample_count) {
         return current_interval;
     } else {                  
         PIC_ActivateIRQ();
@@ -216,7 +210,11 @@ static uint32_t DSP_DMA_EventHandler(Bitu val) {
 
 static void sbdsp_dma_isr(void) {
     const uint32_t dma_data = DMA_Complete_Write(&dma_config);    
-    sbdsp.cur_sample = (int16_t)(dma_data & 0xFF) - 0x80 << 5;
+#ifdef SB_BUFFERLESS
+    sbdsp.cur_sample = (int16_t)((dma_data & 0xFF) ^ 0x80) << 8;
+#else
+    sbdsp_fifo_rx(dma_data & 0xFF);
+#endif
 }
 
 static uint32_t DSP_DAC_Resume_eventHandler(Bitu val) {
@@ -228,20 +226,30 @@ static PIC_TimerEvent DSP_DAC_Resume_event = {
     .handler = DSP_DAC_Resume_eventHandler,
 };
 
+#ifdef SB_BUFFERLESS
 int16_t sbdsp_sample() {
     return (sbdsp.speaker_on & ~sbdsp.dac_resume_pending) ? sbdsp.cur_sample : 0;
 }
+#endif
+
+int16_t sbdsp_muted() {
+    return (!sbdsp.speaker_on || sbdsp.dac_resume_pending);
+}
+
+uint16_t sbdsp_sample_rate() {
+    return sbdsp.sample_rate;
+}
 
 void sbdsp_init() {    
-    // uint8_t x,y,z;    
-    // char buffer[32];
-       
-
     puts("Initing ISA DMA PIO...");    
     SBDSP_DMA_isr_pt = sbdsp_dma_isr;
 
     sbdsp.outbox = 0xAA;
-    dma_config = DMA_init(pio0, DMA_PIO_SM, SBDSP_DMA_isr_pt);         
+    dma_config = DMA_init(pio0, DMA_PIO_SM, SBDSP_DMA_isr_pt);
+
+#ifndef SB_BUFFERLESS
+    fifo_init(&sbdsp.audio_fifo);
+#endif
 }
 
 
@@ -274,6 +282,10 @@ void sbdsp_process(void) {
             sbdsp_dma_enable();                        
             //printf("(0xD4)DMA RESUME\n\r");                                            
             break;
+        case DSP_EXIT_DMA_8:
+            sbdsp.autoinit = 0;
+            sbdsp.current_command = 0;
+            break;
         case DSP_DMA_AUTO:     
             // printf("(0x1C)DMA_AUTO\n\r");                   
             sbdsp.autoinit=1;           
@@ -297,19 +309,10 @@ void sbdsp_process(void) {
                 if(sbdsp.current_command_index==1) {
                     //printf("(0x40) DSP_SET_TIME_CONSTANT\n\r");                                
                     sbdsp.time_constant = sbdsp.inbox;
-                    /*
-                    sbdsp.sample_rate = 1000000ul / (256 - sbdsp.time_constant);           
-                    sbdsp.dma_interval = 1000000ul / sbdsp.sample_rate; // redundant.                    
-                    */
                     sbdsp.dma_interval = 256 - sbdsp.time_constant;
-                    // sbdsp.sample_rate = 1000000ul / sbdsp.dma_interval;           
-                    // sbdsp.sample_step = sbdsp.sample_rate * 65535ul / OUTPUT_SAMPLERATE;                    
-                    // sbdsp.sample_factor = (OUTPUT_SAMPLERATE / sbdsp.sample_rate)+5; //Estimate
-                    
-                    // sbdsp.dma_transfer_size = 4;
-                    
-                    //sbdsp.i2s_buffer_size = ((OUTPUT_SAMPLERATE * 65535ul) / sbdsp.sample_rate * sbdsp.dma_buffer_size) >> 16;
-                    
+                    sbdsp.sample_rate = 1000000ul / sbdsp.dma_interval;           
+                    sbdsp.dma_interval_trim = MAX(1, sbdsp.dma_interval >> 1);
+                    // printf("interval: %u rate: %u, trim: %u\n", sbdsp.dma_interval, sbdsp.sample_rate, sbdsp.dma_interval_trim);
                     
                     sbdsp.dav_dsp=0;
                     sbdsp.current_command=0;                    
@@ -408,7 +411,9 @@ void sbdsp_process(void) {
         case DSP_DIRECT_DAC:
             if(sbdsp.dav_dsp) {
                 if(sbdsp.current_command_index==1) {
+#ifdef SB_BUFFERLESS
                     sbdsp.cur_sample=(int16_t)(sbdsp.inbox) - 0x80 << 5;
+#endif
                     sbdsp.dav_dsp=0;
                     sbdsp.current_command=0;
                 }
@@ -496,6 +501,9 @@ static __force_inline void sbdsp_reset(uint8_t value) {
             PIC_RemoveEvent(&DSP_Reset_Event);  
             sbdsp.autoinit=0;
             sbdsp_dma_disable();
+#ifndef SB_BUFFERLESS
+            sbdsp_fifo_clear();
+#endif
             sbdsp.reset_state=1;
             break;
         case 0:

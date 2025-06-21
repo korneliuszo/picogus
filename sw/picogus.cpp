@@ -61,7 +61,7 @@ constexpr float iow_clkdiv = (float)rp2_clock / 183000.0;
 // UART_TX_PIN is defined in isa_io.pio.h
 #define UART_RX_PIN (-1)
 #define UART_ID     uart0
-#define BAUD_RATE   115200
+#define BAUD_RATE   230400
 
 uint LED_PIN;
 
@@ -84,6 +84,19 @@ extern "C" unsigned int OPL_Pico_PortRead(opl_port_t);
 cms_buffer_t opl_buffer = { {0}, 0, 0 };
 #endif
 
+#ifdef CDROM
+static uint16_t cdrom_port_test;
+extern "C" void MKE_WRITE(uint16_t address, uint8_t value);
+extern "C" uint8_t MKE_READ(uint16_t address);
+extern "C" void mke_init();
+
+#include "cdrom/cdrom.h"
+#include "cdrom/cdrom_image_manager.h"
+cdrom_t cdrom;
+
+static uint32_t cur_read_idx;
+#endif
+
 #ifdef SOUND_GUS
 #include "gus-x.cpp"
 
@@ -101,19 +114,16 @@ void play_mpu(void);
 #endif
 #endif
 
-#ifdef SOUND_TANDY
-#include "square/square.h"
-void play_tandy(void);
-
+#if SOUND_TANDY || SOUND_CMS
 #include "cmd_buffers.h"
+#include "square/square.h"
+void play_psg(void);
+#endif
+#if SOUND_TANDY
 tandy_buffer_t tandy_buffer = { {0}, 0, 0 };
 #endif
-
-#ifdef SOUND_CMS
-void play_cms(void);
+#if SOUND_CMS
 static uint8_t cms_detect = 0xFF;
-
-#include "cmd_buffers.h"
 cms_buffer_t cms_buffer = { {0}, 0, 0 };
 #endif
 
@@ -211,6 +221,29 @@ __force_inline void select_picogus(uint8_t value) {
     case MODE_WIFIAPPLY:
     case MODE_WIFISTAT:
         break;
+    case MODE_CDPORT: // CMS Base port
+        basePort_low = 0;
+        break;
+    case MODE_CDLIST:
+#ifdef CDROM
+        if (cdrom.image_status != CD_STATUS_READY) {
+            cdrom.image_status = CD_STATUS_BUSY;
+            cdrom.image_command = CD_COMMAND_IMAGE_LIST;
+            puts("cdimages start");
+        }
+        puts("cdimages read");
+        cur_read = 0;
+        cur_read_idx = 0;
+#endif
+        break;
+    case MODE_CDSTATUS:
+    case MODE_CDLOAD:
+    case MODE_CDAUTOADV:
+        break;
+    case MODE_CDNAME:
+    case MODE_CDERROR:
+        cur_read = 0;
+        break;
     case MODE_SAVE: // Select save settings register
     case MODE_REBOOT: // Select reboot register
     case MODE_DEFAULTS: // Select reset to defaults register
@@ -235,6 +268,7 @@ __force_inline void write_picogus_low(uint8_t value) {
     case MODE_TANDYPORT: // Tandy Base port
     case MODE_CMSPORT: // CMS Base port
     case MODE_MOUSEPORT:  // USB Mouse port (0 - disabled)
+    case MODE_CDPORT:  // USB Mouse port (0 - disabled)
         basePort_low = value;
         break;
     case MODE_MOUSESEN:  // USB Mouse Sensitivity (8.8 fixedpoint)
@@ -354,6 +388,25 @@ __force_inline void write_picogus_high(uint8_t value) {
         multicore_fifo_push_blocking(FIFO_WIFI_STATUS);
 #endif
         break;
+    case MODE_CDPORT: // CD Base port
+        settings.CD.basePort = (value || basePort_low) ? ((value << 8) | basePort_low) : 0xFFFF;
+#ifdef CDROM
+        cdrom_port_test = settings.CD.basePort >> 4;
+#endif
+        break;
+#ifdef CDROM
+    case MODE_CDLOAD: // Load CD image
+        cdrom.image_data = value;
+        cdrom.image_status = CD_STATUS_BUSY;
+        cdrom.image_command = CD_COMMAND_IMAGE_LOAD_INDEX;
+        break;
+#endif
+    case MODE_CDAUTOADV: // enable auto advance of CD image on USB reinsert
+        settings.CD.autoAdvance = value;
+#ifdef CDROM
+        cdman_set_autoadvance(settings.CD.autoAdvance);
+#endif
+        break;
     // For multifw
     case MODE_BOOTMODE:
         settings.startupMode = value;
@@ -397,6 +450,8 @@ __force_inline uint8_t read_picogus_low(void) {
         return settings.Mouse.sensitivity & 0xFF;
     case MODE_NE2KPORT:  // NE2000 Base port (0 - disabled)
         return settings.NE2K.basePort == 0xFFFF ? 0 : (settings.NE2K.basePort & 0xFF);
+    case MODE_CDPORT: // SB Base port
+        return settings.CD.basePort == 0xFFFF ? 0 : (settings.CD.basePort & 0xFF);
     default:
         return 0x0;
     }
@@ -468,6 +523,43 @@ __force_inline uint8_t read_picogus_high(void) {
         return 0;
 #endif
         break;
+    case MODE_CDPORT: // CD Base port
+        return settings.CD.basePort == 0xFFFF ? 0 : (settings.CD.basePort >> 8);
+#ifdef CDROM
+    case MODE_CDSTATUS:
+        printf("cdstatus %x\n", cdrom.image_status);
+        return cdrom.image_status;
+    case MODE_CDLIST:
+        if (cur_read_idx == cdrom.image_count) { // If end of the images
+            cur_read_idx = cur_read = 0;
+            cdrom.image_status = CD_STATUS_IDLE;
+            cdman_list_images_free(cdrom.image_list, cdrom.image_count);
+            return 0x04; // EOT
+        }
+        ret = cdrom.image_list[cur_read_idx][cur_read++];
+        putchar(ret);
+        if (ret == 0) { // Null terminated
+            ++cur_read_idx;
+            cur_read = 0;
+        }
+        return ret;
+    case MODE_CDLOAD: // Load CD image
+        return cdman_current_image_index();
+    case MODE_CDNAME: // Firmware string
+        ret = cdrom.image_path[cur_read++];
+        if (ret == 0) { // Null terminated
+            cur_read = 0;
+        }
+        return ret;
+    case MODE_CDERROR: // Error string
+        ret = cdrom.error_str[cur_read++];
+        if (ret == 0) { // Null terminated
+            cur_read = 0;
+        }
+        return ret;
+#endif
+    case MODE_CDAUTOADV: // enable joystick
+        return settings.CD.autoAdvance;
     case MODE_HWTYPE: // Hardware version
         return BOARD_TYPE;
     case MODE_FLASH:
@@ -482,10 +574,8 @@ __force_inline uint8_t read_picogus_high(void) {
 void processSettings(void) {
 #if defined(SOUND_GUS)
     settings.startupMode = GUS_MODE;
-#elif defined(SOUND_TANDY)
-    settings.startupMode = TANDY_MODE;
-#elif defined(SOUND_CMS)
-    settings.startupMode = CMS_MODE;
+#elif (SOUND_TANDY || SOUND_CMS)
+    settings.startupMode = PSG_MODE;
 #elif defined(SOUND_SB)
     settings.startupMode = SB_MODE;
 #elif defined(SOUND_OPL)
@@ -512,6 +602,11 @@ void processSettings(void) {
     sermouse_set_protocol(settings.Mouse.protocol);
     sermouse_set_report_rate_hz(settings.Mouse.reportRate);
     sermouse_set_sensitivity(settings.Mouse.sensitivity);
+#endif
+#ifdef CDROM
+    cdrom_port_test = settings.CD.basePort >> 4;
+    printf("cdrom base port: %x\n", settings.CD.basePort);
+    cdman_set_autoadvance(settings.CD.autoAdvance);
 #endif
     if (BOARD_TYPE == PICOGUS_2) {
         m62429->setVolume(M62429_BOTH, settings.Global.waveTableVolume);
@@ -554,25 +649,20 @@ __force_inline void handle_iow(uint16_t port,uint8_t iow_read) {
     } else // if follows down below
 #endif // SOUND_GUS
 #ifdef SOUND_SB
-    if ((port >> 4) == sb_port_test) {      
+    if ((port >> 4) == sb_port_test) {
         switch (port - settings.SB.basePort) {
         // OPL ports
         case 0x8:
             // Fast write
             pio_sm_put(pio0, IOW_PIO_SM, IO_END);
-            opl_buffer.cmds[opl_buffer.head++] = {
-                OPL_REGISTER_PORT,
-                (uint8_t)(iow_read & 0xFF)
-            };
+            // pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
+            opl_buffer.cmds[opl_buffer.head].addr = (uint16_t)(iow_read & 0xFF);
             // Fast write - return early as we've already written 0x0u to the PIO
             return;
             break;
         case 0x9:
             pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
-            opl_buffer.cmds[opl_buffer.head++] = {
-                OPL_DATA_PORT,
-                (uint8_t)(iow_read & 0xFF)
-            };
+            opl_buffer.cmds[opl_buffer.head++].data = (uint8_t)(iow_read & 0xFF);
             break;
         // DSP ports
         default:
@@ -584,25 +674,28 @@ __force_inline void handle_iow(uint16_t port,uint8_t iow_read) {
         } 
     } else // if follows down below
 #endif // SOUND_SB
-#if defined(SOUND_OPL)
-    if (port == settings.SB.oplBasePort) {
-        // Fast write
-        pio_sm_put(pio0, IOW_PIO_SM, IO_END);
-        opl_buffer.cmds[opl_buffer.head++] = {
-            OPL_REGISTER_PORT,
-            (uint8_t)(iow_read & 0xFF)
-        };
-        // Fast write - return early as we've already written 0x0u to the PIO
-        return;
-    } else if (port == settings.SB.oplBasePort + 1) {
+#ifdef CDROM
+    if ((port >> 4) == cdrom_port_test) {      
         pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
-        if (settings.SB.oplSpeedSensitive) {
-            busy_wait_us(1); // busy wait for speed sensitive games
+        // putchar('w');
+        MKE_WRITE(port, iow_read & 0xFF);
+    } else // if follows down below
+#endif
+#if defined(SOUND_OPL)
+    if ((port & 0x3fe) == settings.SB.oplBasePort) {
+        if ((port & 1) == 0) {
+            // Fast write
+            pio_sm_put(pio0, IOW_PIO_SM, IO_END);
+            opl_buffer.cmds[opl_buffer.head].addr = (uint16_t)(iow_read & 0xFF);
+            // Fast write - return early as we've already written 0x0u to the PIO
+            return;
+        } else {
+            pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
+            if (settings.SB.oplSpeedSensitive) {
+                busy_wait_us(1); // busy wait for speed sensitive games
+            }
+            opl_buffer.cmds[opl_buffer.head++].data = (uint8_t)(iow_read & 0xFF);
         }
-        opl_buffer.cmds[opl_buffer.head++] = {
-            OPL_DATA_PORT,
-            (uint8_t)(iow_read & 0xFF)
-        };
     } else // if follows down below
 #endif // SOUND_OPL
 #ifdef SOUND_TANDY
@@ -650,6 +743,47 @@ __force_inline void handle_iow(uint16_t port,uint8_t iow_read) {
         PG_NE2000_Write(port & 0x1f, iow_read & 0xFF);        
     } else // if follows down below
 #endif
+#ifdef SOUND_CMS
+    if ((port & 0x3f0) == settings.CMS.basePort) {
+        pio_sm_put(pio0, IOW_PIO_SM, IO_END);
+        switch (port & 0xf) {
+        // SAA data/address ports
+        case 0x0:
+        case 0x1:
+        case 0x2:
+        case 0x3:
+            cms_buffer.cmds[cms_buffer.head++] = {
+                port,
+                (uint8_t)(iow_read & 0xFF)
+            };
+            break;
+        // CMS autodetect ports
+        case 0x6:
+        case 0x7:
+            cms_detect = iow_read & 0xFF;
+            break;
+        }
+        return;
+    } else
+#endif // SOUND_CMS
+#ifdef SOUND_MPU
+    if ((port & 0x3fe) == settings.MPU.basePort) {
+        switch (port & 0xf) {
+        case 0:
+            pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
+            // printf("MPU IOW: port: %x value: %x\n", port, iow_read & 0xFF);
+            MPU401_WriteData(iow_read & 0xFF, true);
+            gpio_xor_mask(LED_PIN);
+            break;
+        case 1:
+            pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
+            MPU401_WriteCommand(iow_read & 0xFF, true);
+            // printf("MPU IOW: port: %x value: %x\n", port, iow_read & 0xFF);
+            // __dsb();
+            break;
+        }
+    } else
+#endif // SOUND_MPU
     // PicoGUS control
     if (port == CONTROL_PORT) {
         pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
@@ -673,46 +807,6 @@ __force_inline void handle_iow(uint16_t port,uint8_t iow_read) {
         if (control_active) {
             write_picogus_high(iow_read & 0xFF);
         }
-    } else {
-#ifdef SOUND_CMS
-        switch (port - settings.CMS.basePort) {
-        // SAA data/address ports
-        case 0x0:
-        case 0x1:
-        case 0x2:
-        case 0x3:
-            pio_sm_put(pio0, IOW_PIO_SM, IO_END);
-            cms_buffer.cmds[cms_buffer.head++] = {
-                port,
-                (uint8_t)(iow_read & 0xFF)
-            };
-            return;
-            break;
-        // CMS autodetect ports
-        case 0x6:
-        case 0x7:
-            pio_sm_put(pio0, IOW_PIO_SM, IO_END);
-            cms_detect = iow_read & 0xFF;
-            return;
-            break;
-        }
-#endif // SOUND_CMS
-#ifdef SOUND_MPU
-        switch (port - settings.MPU.basePort) {
-        case 0:
-            pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
-            // printf("MPU IOW: port: %x value: %x\n", port, iow_read & 0xFF);
-            MPU401_WriteData(iow_read & 0xFF, true);
-            gpio_xor_mask(LED_PIN);
-            break;
-        case 1:
-            pio_sm_put(pio0, IOW_PIO_SM, IO_WAIT);
-            MPU401_WriteCommand(iow_read & 0xFF, true);
-            // printf("MPU IOW: port: %x value: %x\n", port, iow_read & 0xFF);
-            // __dsb();
-            break;
-        }
-#endif // SOUND_MPU
     }
     // Fallthrough if no match, or for slow write, reset PIO
     pio_sm_put(pio0, IOW_PIO_SM, IO_END);
@@ -735,17 +829,28 @@ __force_inline void handle_ior(uint16_t port) {
 #if defined(SOUND_SB)
     if ((port >> 4) == sb_port_test) {
         pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
-        if (port - settings.SB.basePort == 0x8) {
+        switch (port - settings.SB.basePort) {
+        case 0x8:
             // wait for OPL buffer to process
             while (opl_buffer.tail != opl_buffer.head) {
                 tight_loop_contents();
             }
             pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | OPL_Pico_PortRead(OPL_REGISTER_PORT));
-        } else {
+            break;
+        default:
             sbdsp_process();
             pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | sbdsp_read(port & 0xF));        
             sbdsp_process();
+            break;
         }
+    } else // if follows down below
+#endif
+#if defined(CDROM)
+    if ((port >> 4) == cdrom_port_test) {
+    // if ((port >> 4) == 0x23) {
+        pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
+        pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | MKE_READ(port));
+        // putchar('r');
     } else // if follows down below
 #endif
 #if defined(SOUND_OPL)
@@ -799,6 +904,25 @@ __force_inline void handle_ior(uint16_t port) {
         return;
     } else // if follows down below
 #endif // USB_MOUSE
+#if defined(SOUND_CMS)
+    if ((port & 0x3f0) == settings.CMS.basePort) {
+        switch (port & 0xf) {
+        // CMS autodetect ports
+        case 0x4:
+            pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
+            pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | 0x7F);
+            return;
+        case 0xa:
+        case 0xb:
+            pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
+            pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | cms_detect);
+            return;
+        default:
+            pio_sm_put(pio0, IOR_PIO_SM, IO_END);
+            return;
+        }
+    } else
+#endif // SOUND_CMS
     if (port == CONTROL_PORT) {
         // Tell PIO to wait for data
         pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
@@ -811,20 +935,6 @@ __force_inline void handle_ior(uint16_t port) {
         pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
         pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | read_picogus_high());
     } else {
-#if defined(SOUND_CMS)
-        switch (port - settings.CMS.basePort) {
-        // CMS autodetect ports
-        case 0x4:
-            pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
-            pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | 0x7F);
-            return;
-        case 0xa:
-        case 0xb:
-            pio_sm_put(pio0, IOR_PIO_SM, IO_WAIT);
-            pio_sm_put(pio0, IOR_PIO_SM, IOR_SET_VALUE | cms_detect);
-            return;
-        }
-#endif // SOUND_CMS
         // Reset PIO
         pio_sm_put(pio0, IOR_PIO_SM, IO_END);
     }
@@ -1011,6 +1121,11 @@ int main()
     multicore_launch_core1(&play_adlib);
 #endif
 
+#ifdef CDROM
+    cdrom_global_init();
+    mke_init();
+#endif
+
 #ifdef SOUND_GUS
     puts("Creating GUS");
     GUS_OnReset();
@@ -1023,15 +1138,10 @@ int main()
 #endif // MPU_ONLY
 #endif // SOUND_MPU
 
-#ifdef SOUND_TANDY
-    puts("Creating tandysound");
-    multicore_launch_core1(&play_tandy);
-#endif // SOUND_TANDY
-
-#ifdef SOUND_CMS
-    puts("Creating CMS");
-    multicore_launch_core1(&play_cms);
-#endif // SOUND_CMS
+#if (SOUND_TANDY || SOUND_CMS)
+    puts("Creating psgsound");
+    multicore_launch_core1(&play_psg);
+#endif // (SOUND_TANDY || SOUND_CMS)
 
 #ifdef NE2000
 extern void PIC_ActivateIRQ(void);

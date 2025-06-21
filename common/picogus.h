@@ -6,7 +6,7 @@
 #define CONTROL_PORT 0x1D0
 #define DATA_PORT_LOW  0x1D1
 #define DATA_PORT_HIGH 0x1D2
-#define PICOGUS_PROTOCOL_VER 3
+#define PICOGUS_PROTOCOL_VER 4
 
 typedef enum {
     PICO_FIRMWARE_IDLE = 0,
@@ -16,6 +16,13 @@ typedef enum {
     PICO_FIRMWARE_ERROR = 0xFF
 } pico_firmware_status_t;
 
+typedef enum {
+    CD_STATUS_ERROR = -1,
+    CD_STATUS_IDLE,
+    CD_STATUS_BUSY,
+    CD_STATUS_READY,
+} cdrom_image_status_t;
+
 typedef enum { PICO_BASED = 0, PICOGUS_2 = 1 } board_type_t;
 
 typedef enum {
@@ -23,20 +30,18 @@ typedef enum {
     GUS_MODE     = 1,
     ADLIB_MODE   = 2,
     MPU_MODE     = 3,
-    TANDY_MODE   = 4,
-    CMS_MODE     = 5,
-    SB_MODE      = 6,
-    USB_MODE     = 7,
-    NE2000_MODE  = 8
+    PSG_MODE     = 4,
+    SB_MODE      = 5,
+    USB_MODE     = 6,
+    NE2000_MODE  = 7
 } card_mode_t;
 
-static const char *modenames[9] = {
+static const char *modenames[8] = {
     "INVALID",
     "GUS",
     "ADLIB",
     "MPU",
-    "TANDY",
-    "CMS",
+    "PSG",
     "SB",
     "USB",
     "NE2000"
@@ -53,22 +58,35 @@ static const char *modenames[9] = {
 #define MODE_TANDYPORT  0x08 // Tandy Base port
 #define MODE_CMSPORT    0x09 // CMS Base port
 #define MODE_JOYEN      0x0f // enable joystick
+
 #define MODE_GUSBUF     0x10 // Audio buffer size
 #define MODE_GUSDMA     0x11 // DMA interval
 #define MODE_GUS44K     0x12 // Force 44k
+
 #define MODE_WTVOL      0x20 // Wavetable mixer volume
 #define MODE_MPUDELAY   0x21 // MPU sysex delay
 #define MODE_MPUFAKE    0x22 // MPU fake all notes off
+
 #define MODE_OPLWAIT    0x30 // Adlib speed sensitive fix
+
 #define MODE_MOUSEPORT  0x40 // Mouse Base port
 #define MODE_MOUSEPROTO 0x41 // Mouse protocol
 #define MODE_MOUSERATE  0x42 // Mouse report rate
 #define MODE_MOUSESEN   0x43 // Mouse sensitivity
+
 #define MODE_NE2KPORT   0x50 // NE2000 Base port
 #define MODE_WIFISSID   0x51 // WiFi SSID
 #define MODE_WIFIPASS   0x52 // WiFi password
 #define MODE_WIFIAPPLY  0x53 // apply WiFi settings
 #define MODE_WIFISTAT   0x54 // WiFi status
+
+#define MODE_CDPORT     0x60 // CD base port
+#define MODE_CDSTATUS   0x61 // Get CD image command status
+#define MODE_CDERROR    0x62 // Get CD image error
+#define MODE_CDLIST     0x63 // List CD images
+#define MODE_CDLOAD     0x64 // Load CD image or get loaded image index
+#define MODE_CDNAME     0x65 // Get name of loaded CD image
+#define MODE_CDAUTOADV  0x66 // Set autoadvance for CD image on USB reinsert
 
 #define MODE_DEFAULTS   0xE0 // Select reset to defaults register
 #define MODE_SAVE       0xE1 // Select save settings register
