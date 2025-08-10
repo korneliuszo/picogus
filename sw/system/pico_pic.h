@@ -23,7 +23,7 @@
 #include "pico/time.h"
 #include "hardware/gpio.h"
 
-#include "dosbox-x-compat.h"
+#include "include/dosbox-x-compat.h"
 
 #ifdef PICOPOCKET
 #define IA0_PIN 26

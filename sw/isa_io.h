@@ -63,37 +63,24 @@ __force_inline void isa_prepare()
 
 #ifdef USE_IRQ
 
-void iow_isr(void) {
-    /* //printf("ints %x\n", pio0->ints0); */
-    uint32_t iow_read = pio_sm_get(pio0, IOW_PIO_SM); //>> 16;
-    // printf("%x", iow_read);
-    uint16_t port = (iow_read >> 8) & 0x3FF;
-    handle_iow(port,iow_read);
-    // pio_interrupt_clear(pio0, pio_intr_sm0_rxnempty_lsb);
-    irq_clear(PIO0_IRQ_0);
-}
-void ior_isr(void) {
-    uint16_t port = pio_sm_get(pio0, IOR_PIO_SM) & 0x3FF;
-    handle_ior(port);
-    // pio_interrupt_clear(pio0, PIO_INTR_SM0_RXNEMPTY_LSB);
-    irq_clear(PIO0_IRQ_1);
+void io_isr(void) {
+    // Prioritize handling of ior because we need to react faster for IOCHRDY
+    if (__builtin_expect(!!(pio0->ints1 & (1 << IOR_PIO_SM)), true)) {
+        handle_ior();
+    } else {
+        handle_iow();
+    }
 }
 
 __force_inline void isa_irq_prepare()
 {
-	puts("Enabling IRQ on ISA IOR/IOW events");
-	// iow irq
-	irq_set_enabled(PIO0_IRQ_0, false);
-	pio_set_irq0_source_enabled(pio0, pis_sm0_rx_fifo_not_empty, true);
-	irq_set_priority(PIO0_IRQ_0, PICO_HIGHEST_IRQ_PRIORITY);
-	irq_set_exclusive_handler(PIO0_IRQ_0, iow_isr);
-	irq_set_enabled(PIO0_IRQ_0, true);
-	// ior irq
-	irq_set_enabled(PIO0_IRQ_1, false);
-	pio_set_irq1_source_enabled(pio0, pis_sm1_rx_fifo_not_empty, true);
-	irq_set_priority(PIO0_IRQ_1, PICO_HIGHEST_IRQ_PRIORITY);
-	irq_set_exclusive_handler(PIO0_IRQ_1, ior_isr);
-	irq_set_enabled(PIO0_IRQ_1, true);
+    puts("Enabling IRQ on ISA IOR/IOW events");
+    irq_set_enabled(PIO0_IRQ_1, false);
+    pio_set_irq1_source_enabled(pio0, pio_get_rx_fifo_not_empty_interrupt_source(IOW_PIO_SM), true);
+    pio_set_irq1_source_enabled(pio0, pio_get_rx_fifo_not_empty_interrupt_source(IOR_PIO_SM), true);
+    irq_set_priority(PIO0_IRQ_1, PICO_HIGHEST_IRQ_PRIORITY);
+    irq_set_exclusive_handler(PIO0_IRQ_1, io_isr);
+    irq_set_enabled(PIO0_IRQ_1, true);
 }
 #else
 
